@@ -3725,7 +3725,7 @@ iperf_attach_zc(struct iperf_stream *sp, struct iperf_test *test)
     sp->rcv = iperf_zc_tcp_recv;
 
     if (netgpu_register_region(sp->ctx, sp->buffer,
-            test->settings->blksize, true))
+            test->settings->blksize, false))
 	return false;
 
     return true;
