@@ -3692,7 +3692,7 @@ iperf_setup_zc(struct iperf_test *test)
         goto out;
 
     if (netgpu_register_region(test->ctx, test->zc_area, test->zc_mapsz,
-			       !test->gpumem))
+			       test->gpumem))
         goto out;
 
     netgpu_populate_ring(test->ctx, (uint64_t)test->zc_area, slots);
