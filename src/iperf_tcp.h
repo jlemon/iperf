@@ -59,5 +59,7 @@ int iperf_tcp_listen(struct iperf_test *);
 
 int iperf_tcp_connect(struct iperf_test *);
 
+int iperf_zc_tcp_send(struct iperf_stream *);
+int iperf_zc_tcp_recv(struct iperf_stream *);
 
 #endif

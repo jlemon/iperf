@@ -44,6 +44,9 @@
 #include "net.h"
 #include "cjson.h"
 
+#include "netgpu_lib.h"
+#define array_size(x)	(sizeof(x) / sizeof((x)[0]))
+
 #if defined(HAVE_FLOWLABEL)
 #include "flowlabel.h"
 #endif /* HAVE_FLOWLABEL */
@@ -111,8 +114,10 @@ int
 iperf_tcp_accept(struct iperf_test * test)
 {
     int     s;
+#if 0
     signed char rbuf = ACCESS_DENIED;
     char    cookie[COOKIE_SIZE];
+#endif
     socklen_t len;
     struct sockaddr_storage addr;
 
@@ -121,7 +126,10 @@ iperf_tcp_accept(struct iperf_test * test)
         i_errno = IESTREAMCONNECT;
         return -1;
     }
+    printf("accepted new connection from listener %d: %d\n", test->listener, s);
 
+#if 0
+    /* this is a blocking zero-copy read on the data channel.. */
     if (Nread(s, cookie, COOKIE_SIZE, Ptcp) < 0) {
         i_errno = IERECVCOOKIE;
         return -1;
@@ -134,6 +142,7 @@ iperf_tcp_accept(struct iperf_test * test)
         }
         close(s);
     }
+#endif
 
     return s;
 }
@@ -153,6 +162,14 @@ iperf_tcp_listen(struct iperf_test *test)
 
     s = test->listener;
 
+    if (test->zerocopy == 2) {
+        if (!test->data_port) {
+            printf("Zero copy requires --dport\n");
+            i_errno = IESTREAMLISTEN;
+            return -1;
+        }
+    }
+
     /*
      * If certain parameters are specified (such as socket buffer
      * size), then throw away the listening socket (the one for which
@@ -162,15 +179,17 @@ iperf_tcp_listen(struct iperf_test *test)
      *
      * It's not clear whether this is a requirement or a convenience.
      */
-    if (test->no_delay || test->settings->mss || test->settings->socket_bufsize) {
+    if (test->no_delay || test->settings->mss ||
+            test->settings->socket_bufsize || test->data_port) {
 	struct addrinfo hints, *res;
 	char portstr[6];
 
         FD_CLR(s, &test->read_set);
         close(s);
 
-        snprintf(portstr, 6, "%d", test->server_port);
+        snprintf(portstr, 6, "%d", test->data_port);
         memset(&hints, 0, sizeof(hints));
+        printf("Opening DATA listener on %d\n", test->data_port);
 
 	/*
 	 * If binding to the wildcard address with no explicit address
@@ -385,13 +404,16 @@ iperf_tcp_connect(struct iperf_test *test)
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = test->settings->domain;
     hints.ai_socktype = SOCK_STREAM;
-    snprintf(portstr, sizeof(portstr), "%d", test->server_port);
+    if (!test->data_port)
+        test->data_port = test->server_port;
+    snprintf(portstr, sizeof(portstr), "%d", test->data_port);
     if ((gerror = getaddrinfo(test->server_hostname, portstr, &hints, &server_res)) != 0) {
 	if (test->bind_address)
 	    freeaddrinfo(local_res);
         i_errno = IESTREAMCONNECT;
         return -1;
     }
+    printf("Connecting to DATA port %d\n", test->data_port);
 
     if ((s = socket(server_res->ai_family, SOCK_STREAM, 0)) < 0) {
 	if (test->bind_address)
@@ -635,4 +657,85 @@ iperf_tcp_connect(struct iperf_test *test)
     }
 
     return s;
+}
+
+#define __USE_GNU
+#include <poll.h>
+
+static int
+iperf_zc_check_err(int fd)
+{
+	struct pollfd pfd;
+	int ret;
+
+	pfd.fd = fd;
+	pfd.events = POLLIN | POLLRDHUP;
+	ret = poll(&pfd, 1, 0);
+	if (ret == 1 && (pfd.revents & POLLRDHUP))
+		return NET_HARDERROR;
+	return 0;
+}
+
+
+/* iperf_zc_tcp_recv
+ *
+ * receives the data for TCP
+ *
+ * select only says if "readable", "error".
+ * EOF is neither.  RX does not provide EOF indications.
+ *   if count == 0, test for eof?
+ */
+int
+iperf_zc_tcp_recv(struct iperf_stream *sp)
+{
+    struct iovec *iov[32];
+    int count;
+    int i, r;
+
+    count = netgpu_get_rx_batch(sp->ctx, iov, array_size(iov));
+    if (!count)
+	return iperf_zc_check_err(sp->socket);
+
+    r = 0;
+    for (i = 0; i < count; i++) {
+	r += iov[i]->iov_len;
+	netgpu_recycle_buffer(sp->ctx, iov[i]->iov_base);
+    }
+
+    netgpu_recycle_complete(sp->ctx);
+
+    /* Only count bytes received while we're in the correct state. */
+    if (sp->test->state == TEST_RUNNING) {
+	sp->result->bytes_received += r;
+	sp->result->bytes_received_this_interval += r;
+    }
+    else {
+	if (sp->test->debug)
+	    printf("Late receive, state = %d\n", sp->test->state);
+    }
+
+    return r;
+}
+
+/* iperf_zc_tcp_send
+ *
+ * sends the data for TCP
+ */
+int
+iperf_zc_tcp_send(struct iperf_stream *sp)
+{
+    int r;
+
+    r = Nzc_send(sp->socket, sp->buffer, sp->settings->blksize, Ptcp);
+
+    if (r < 0)
+        return r;
+
+    sp->result->bytes_sent += r;
+    sp->result->bytes_sent_this_interval += r;
+
+    if (sp->test->debug)
+	printf("sent %d bytes of %d, total %" PRIu64 "\n", r, sp->settings->blksize, sp->result->bytes_sent);
+
+    return r;
 }

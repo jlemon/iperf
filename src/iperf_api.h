@@ -73,6 +73,8 @@ struct iperf_time;
 #define OPT_REPEATING_PAYLOAD 18
 #define OPT_EXTRA_DATA 19
 #define OPT_BIDIRECTIONAL 20
+#define OPT_DATAPORT 21
+#define OPT_GPUMEM 22
 
 /* states */
 #define TEST_START 1

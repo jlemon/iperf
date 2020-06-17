@@ -60,6 +60,9 @@
 #include "iperf_util.h"
 #include "iperf_locale.h"
 
+#include <sys/mman.h>
+#include "netgpu_lib.h"
+
 #if defined(HAVE_TCP_CONGESTION)
 #if !defined(TCP_CA_NAME_MAX)
 #define TCP_CA_NAME_MAX 16
@@ -88,7 +91,10 @@ iperf_server_listen(struct iperf_test *test)
 
     if (!test->json_output) {
 	iperf_printf(test, "-----------------------------------------------------------\n");
-	iperf_printf(test, "Server listening on %d\n", test->server_port);
+	iperf_printf(test, "Server listening on %d", test->server_port);
+        if (test->data_port)
+		iperf_printf(test, ",   Data port at %d", test->data_port);
+	iperf_printf(test, "\n");
 	iperf_printf(test, "-----------------------------------------------------------\n");
 	if (test->forceflush)
 	    iflush(test);
@@ -382,6 +388,13 @@ cleanup_server(struct iperf_test *test)
     if (test->timer != NULL) {
         tmr_cancel(test->timer);
         test->timer = NULL;
+    }
+    if (test->ctx) {
+        netgpu_stop(&test->ctx);
+    }
+    if (test->zc_area) {
+        munmap(test->zc_area, test->zc_mapsz);
+        test->zc_area = NULL;
     }
 }
 

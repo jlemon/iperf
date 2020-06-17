@@ -180,6 +180,7 @@ struct iperf_stream
     char      *buffer;		/* data to send, mmapped */
     int       diskfile_fd;	/* file to send, file descriptor */
     int	      diskfile_left;	/* remaining file data on disk */
+    struct netgpu *ctx;
 
     /*
      * for udp measurements - This can be a structure outside stream, and
@@ -254,6 +255,7 @@ struct iperf_test
     char     *bind_address;                     /* first -B option */
     TAILQ_HEAD(xbind_addrhead, xbind_entry) xbind_addrs; /* all -X opts */
     int       bind_port;                        /* --cport option */
+    int       data_port;                        /* --dport option */
     int       server_port;
     int       omit;                             /* duration of omit period (-O flag) */
     int       duration;                         /* total duration of test (-t flag) */
@@ -298,6 +300,7 @@ struct iperf_test
     int       forceflush; /* --forceflush - flushing output at every interval */
     int	      multisend;
     int	      repeating_payload;                /* --repeating-payload */
+    int	      gpumem;
 
     char     *json_output_string; /* rendered JSON output if json_output is set */
     /* Select related parameters */
@@ -355,6 +358,10 @@ struct iperf_test
     /* Server output (use on server side only) */
     TAILQ_HEAD(iperf_textlisthead, iperf_textline) server_output_list;
 
+    /* should be in sp, but ... */
+    struct netgpu *ctx;
+    void      *zc_area;
+    unsigned  zc_mapsz;
 };
 
 /* default settings */

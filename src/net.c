@@ -65,6 +65,8 @@
 #include "net.h"
 #include "timer.h"
 
+#include "netgpu_lib.h"
+
 /*
  * Declaration of gerror in iperf_error.c.  Most other files in iperf3 can get this
  * by including "iperf.h", but net.c lives "below" this layer.  Clearly the
@@ -374,6 +376,38 @@ Nwrite(int fd, const char *buf, size_t count, int prot)
     return count;
 }
 
+
+int
+Nzc_send(int fd, const char *buf, size_t count, int prot)
+{
+    register ssize_t r;
+    register size_t nleft = count;
+    int flags = MSG_ZEROCOPY | MSG_NETDMA;
+
+    while (nleft > 0) {
+	r = send(fd, buf, nleft, flags);
+	if (r < 0) {
+	    switch (errno) {
+		case EINTR:
+		case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+		case EWOULDBLOCK:
+#endif
+		return count - nleft;
+
+		case ENOBUFS:
+		return NET_SOFTERROR;
+
+		default:
+		return NET_HARDERROR;
+	    }
+	} else if (r == 0)
+	    return NET_SOFTERROR;
+	nleft -= r;
+	buf += r;
+    }
+    return count;
+}
 
 int
 has_sendfile(void)

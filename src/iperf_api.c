@@ -46,6 +46,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <stdbool.h>
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
 #endif
@@ -90,6 +91,8 @@
 #include <openssl/bio.h>
 #include "iperf_auth.h"
 #endif /* HAVE_SSL */
+
+#include "netgpu_lib.h"
 
 /* Forwards. */
 static int send_parameters(struct iperf_test *test);
@@ -826,6 +829,8 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
         {"window", required_argument, NULL, 'w'},
         {"bind", required_argument, NULL, 'B'},
         {"cport", required_argument, NULL, OPT_CLIENT_PORT},
+        {"dport", required_argument, NULL, OPT_DATAPORT},
+        {"gpu", no_argument, NULL, OPT_GPUMEM},
         {"set-mss", required_argument, NULL, 'M'},
         {"no-delay", no_argument, NULL, 'N'},
         {"version4", no_argument, NULL, '4'},
@@ -890,7 +895,7 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
     char *client_username = NULL, *client_rsa_public_key = NULL, *server_rsa_private_key = NULL;
 #endif /* HAVE_SSL */
 
-    while ((flag = getopt_long(argc, argv, "p:f:i:D1VJvsc:ub:t:n:k:l:P:Rw:B:M:N46S:L:ZO:F:A:T:C:dI:hX:", longopts, NULL)) != -1) {
+    while ((flag = getopt_long(argc, argv, "p:f:i:D1VJvsc:ub:t:n:k:l:P:Rw:B:M:N46S:L:ZO:F:A:T:C:dI:hX:z", longopts, NULL)) != -1) {
         switch (flag) {
             case 'p':
 		portno = atoi(optarg);
@@ -1069,6 +1074,17 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
 		}
                 test->bind_port = portno;
                 break;
+            case OPT_DATAPORT:
+                portno = atoi(optarg);
+                if (portno < 1 || portno > 65535) {
+                    i_errno = IEBADPORT;
+                    return -1;
+                }
+                test->data_port = portno;
+                break;
+            case OPT_GPUMEM:
+                test->gpumem = true;
+                break;
             case 'M':
                 test->settings->mss = atoi(optarg);
                 if (test->settings->mss > MAX_MSS) {
@@ -1136,6 +1152,9 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
                     return -1;
                 }
 		TAILQ_INSERT_TAIL(&test->xbind_addrs, xbe, link);
+                break;
+            case 'z':
+                test->zerocopy = 2;		/* 2 == our zerocopy */
                 break;
             case 'Z':
                 if (!has_sendfile()) {
@@ -1608,6 +1627,7 @@ int test_is_authorized(struct iperf_test *test){
  * iperf_exchange_parameters - handles the param_Exchange part for client
  *
  */
+bool iperf_setup_zc(struct iperf_test *test);
 
 int
 iperf_exchange_parameters(struct iperf_test *test)
@@ -1662,6 +1682,11 @@ iperf_exchange_parameters(struct iperf_test *test)
 	if (iperf_set_send_state(test, CREATE_STREAMS) != 0)
             return -1;
 
+    }
+
+    if (test->zerocopy == 2) {
+        if (!iperf_setup_zc(test))
+            return -1;
     }
 
     return 0;
@@ -3638,7 +3663,72 @@ iperf_free_stream(struct iperf_stream *sp)
     free(sp->result);
     if (sp->send_timer != NULL)
 	tmr_cancel(sp->send_timer);
+    if (sp->ctx)
+        netgpu_stop(&sp->ctx);
     free(sp);
+}
+
+bool
+iperf_setup_zc(struct iperf_test *test)
+{
+    int slots;
+
+    if (test->ctx)
+        return false;
+
+    slots = 10240;
+    test->zc_mapsz = 10240 * 4096;
+
+    if (!test->zc_area) {
+        test->zc_area = netgpu_alloc_memory(test->zc_mapsz, test->gpumem);
+        if (!test->zc_area)
+            goto out;
+    }
+
+    /* 32 queue boxes are 0-31, shadow: 32-63 */
+    /* 56 queue boxes are 0-55, shadow: 56-111 */
+    /* pick queue 57, which falls into both ranges. */
+    if (netgpu_start(&test->ctx, "eth0", 57, slots))
+        goto out;
+
+    if (netgpu_register_region(test->ctx, test->zc_area, test->zc_mapsz,
+			       !test->gpumem))
+        goto out;
+
+    netgpu_populate_ring(test->ctx, (uint64_t)test->zc_area, slots);
+
+    return true;
+
+out:
+    if (test->ctx)
+        netgpu_stop(&test->ctx);
+    if (test->zc_area)
+        munmap(test->zc_area, test->zc_mapsz);
+    test->ctx = NULL;
+    test->zc_area = NULL;
+    return false;
+}
+
+bool
+iperf_attach_zc(struct iperf_stream *sp, struct iperf_test *test)
+{
+    if (!test->ctx)
+        return false;
+
+    if (netgpu_attach_socket(test->ctx, sp->socket))
+        return false;
+
+    sp->ctx = test->ctx;
+    test->ctx = NULL;
+
+    sp->snd = iperf_zc_tcp_send;
+    sp->rcv = iperf_zc_tcp_recv;
+
+    if (netgpu_register_region(sp->ctx, sp->buffer,
+            test->settings->blksize, true))
+	return false;
+
+    return true;
 }
 
 /**************************************************************************/
@@ -3791,6 +3881,11 @@ iperf_init_stream(struct iperf_stream *sp, struct iperf_test *test)
                 return -1;
             }
         }
+    }
+
+    if (test->zerocopy == 2 && !iperf_attach_zc(sp, test)) {
+        i_errno = IEINITSTREAM;
+        return -1;
     }
 
     return 0;
