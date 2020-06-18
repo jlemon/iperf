@@ -3663,8 +3663,8 @@ iperf_free_stream(struct iperf_stream *sp)
     free(sp->result);
     if (sp->send_timer != NULL)
 	tmr_cancel(sp->send_timer);
-    if (sp->ctx)
-        netgpu_stop(&sp->ctx);
+    if (sp->data_buffer && sp->data_buffer != sp->buffer)
+        netgpu_free_memory(sp->data_buffer, sp->settings->blksize, true);
     free(sp);
 }
 
@@ -3703,8 +3703,7 @@ out:
     if (test->ctx)
         netgpu_stop(&test->ctx);
     if (test->zc_area)
-        munmap(test->zc_area, test->zc_mapsz);
-    test->ctx = NULL;
+        netgpu_free_memory(test->zc_area, test->zc_mapsz, test->gpumem);
     test->zc_area = NULL;
     return false;
 }
@@ -3719,13 +3718,18 @@ iperf_attach_zc(struct iperf_stream *sp, struct iperf_test *test)
         return false;
 
     sp->ctx = test->ctx;
-    test->ctx = NULL;
-
     sp->snd = iperf_zc_tcp_send;
     sp->rcv = iperf_zc_tcp_recv;
 
-    if (netgpu_register_region(sp->ctx, sp->buffer,
-            test->settings->blksize, false))
+    sp->data_buffer = sp->buffer;
+    if (test->gpumem) {
+        sp->data_buffer = netgpu_alloc_memory(sp->settings->blksize, true);
+        if (!sp->data_buffer)
+            return false;
+    }
+
+    if (netgpu_register_region(sp->ctx, sp->data_buffer,
+            test->settings->blksize, test->gpumem))
 	return false;
 
     return true;

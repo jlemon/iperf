@@ -382,7 +382,7 @@ Nzc_send(int fd, const char *buf, size_t count, int prot)
 {
     register ssize_t r;
     register size_t nleft = count;
-    int flags = MSG_ZEROCOPY | MSG_NETDMA;
+    int flags = MSG_NETDMA;
 
     while (nleft > 0) {
 	r = send(fd, buf, nleft, flags);

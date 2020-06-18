@@ -393,7 +393,7 @@ cleanup_server(struct iperf_test *test)
         netgpu_stop(&test->ctx);
     }
     if (test->zc_area) {
-        munmap(test->zc_area, test->zc_mapsz);
+        netgpu_free_memory(test->zc_area, test->zc_mapsz, test->gpumem);
         test->zc_area = NULL;
     }
 }

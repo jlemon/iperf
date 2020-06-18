@@ -181,6 +181,7 @@ struct iperf_stream
     int       diskfile_fd;	/* file to send, file descriptor */
     int	      diskfile_left;	/* remaining file data on disk */
     struct netgpu *ctx;
+    void     *data_buffer;
 
     /*
      * for udp measurements - This can be a structure outside stream, and

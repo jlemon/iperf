@@ -726,7 +726,7 @@ iperf_zc_tcp_send(struct iperf_stream *sp)
 {
     int r;
 
-    r = Nzc_send(sp->socket, sp->buffer, sp->settings->blksize, Ptcp);
+    r = Nzc_send(sp->socket, sp->data_buffer, sp->settings->blksize, Ptcp);
 
     if (r < 0)
         return r;
