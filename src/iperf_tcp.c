@@ -692,17 +692,17 @@ iperf_zc_tcp_recv(struct iperf_stream *sp)
     int count;
     int i, r;
 
-    count = netgpu_get_rx_batch(sp->ctx, iov, array_size(iov));
+    count = netgpu_get_rx_batch(sp->zc_sk, iov, array_size(iov));
     if (!count)
 	return iperf_zc_check_err(sp->socket);
 
     r = 0;
     for (i = 0; i < count; i++) {
 	r += iov[i]->iov_len;
-	netgpu_recycle_buffer(sp->ctx, iov[i]->iov_base);
+	netgpu_recycle_buffer(sp->ifq, iov[i]->iov_base);
     }
 
-    netgpu_recycle_complete(sp->ctx);
+    netgpu_recycle_complete(sp->ifq);
 
     /* Only count bytes received while we're in the correct state. */
     if (sp->test->state == TEST_RUNNING) {

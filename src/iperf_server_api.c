@@ -389,12 +389,15 @@ cleanup_server(struct iperf_test *test)
         tmr_cancel(test->timer);
         test->timer = NULL;
     }
-    if (test->ctx) {
-        netgpu_stop(&test->ctx);
+    if (test->ifq) {
+        netgpu_close_ifq(&test->ifq);
     }
-    if (test->zc_area) {
-        netgpu_free_memory(test->zc_area, test->zc_mapsz, test->gpumem);
-        test->zc_area = NULL;
+    if (test->ctx) {
+        netgpu_close_ctx(&test->ctx);
+    }
+    if (test->zc_mem) {
+        netgpu_free_memory(test->zc_mem, test->zc_memsz, test->zc_memtype);
+        test->zc_mem = NULL;
     }
 }
 

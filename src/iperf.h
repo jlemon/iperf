@@ -180,7 +180,8 @@ struct iperf_stream
     char      *buffer;		/* data to send, mmapped */
     int       diskfile_fd;	/* file to send, file descriptor */
     int	      diskfile_left;	/* remaining file data on disk */
-    struct netgpu *ctx;
+    struct netgpu_ifq *ifq;
+    struct netgpu_skq *zc_sk;
     void     *data_buffer;
 
     /*
@@ -301,7 +302,7 @@ struct iperf_test
     int       forceflush; /* --forceflush - flushing output at every interval */
     int	      multisend;
     int	      repeating_payload;                /* --repeating-payload */
-    int	      gpumem;
+    int	      zc_memtype;
 
     char     *json_output_string; /* rendered JSON output if json_output is set */
     /* Select related parameters */
@@ -360,9 +361,10 @@ struct iperf_test
     TAILQ_HEAD(iperf_textlisthead, iperf_textline) server_output_list;
 
     /* should be in sp, but ... */
-    struct netgpu *ctx;
-    void      *zc_area;
-    unsigned  zc_mapsz;
+    struct netgpu_ctx *ctx;
+    struct netgpu_ifq *ifq;
+    void      *zc_mem;
+    unsigned  zc_memsz;
 };
 
 /* default settings */

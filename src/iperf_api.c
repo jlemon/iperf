@@ -1083,7 +1083,7 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
                 test->data_port = portno;
                 break;
             case OPT_GPUMEM:
-                test->gpumem = true;
+                test->zc_memtype = MEMTYPE_CUDA;
                 break;
             case 'M':
                 test->settings->mss = atoi(optarg);
@@ -3664,7 +3664,10 @@ iperf_free_stream(struct iperf_stream *sp)
     if (sp->send_timer != NULL)
 	tmr_cancel(sp->send_timer);
     if (sp->data_buffer && sp->data_buffer != sp->buffer)
-        netgpu_free_memory(sp->data_buffer, sp->settings->blksize, true);
+        netgpu_free_memory(sp->data_buffer, sp->settings->blksize,
+			   sp->test->zc_memtype);
+    if (sp->zc_sk)
+        netgpu_detach_socket(&sp->zc_sk);
     free(sp);
 }
 
@@ -3677,34 +3680,36 @@ iperf_setup_zc(struct iperf_test *test)
         return false;
 
     slots = 10240;
-    test->zc_mapsz = 10240 * 4096;
+    test->zc_memsz = slots * 4096;
 
-    if (!test->zc_area) {
-        test->zc_area = netgpu_alloc_memory(test->zc_mapsz, test->gpumem);
-        if (!test->zc_area)
+    if (!test->zc_mem) {
+        test->zc_mem = netgpu_alloc_memory(test->zc_memsz, test->zc_memtype);
+        if (!test->zc_mem)
             goto out;
     }
 
     /* 32 queue boxes are 0-31, shadow: 32-63 */
     /* 56 queue boxes are 0-55, shadow: 56-111 */
     /* pick queue 57, which falls into both ranges. */
-    if (netgpu_start(&test->ctx, "eth0", 57, slots))
+    if (netgpu_open_ctx(&test->ctx, "eth0"))
         goto out;
-
-    if (netgpu_register_region(test->ctx, test->zc_area, test->zc_mapsz,
-			       test->gpumem))
+    if (netgpu_open_ifq(&test->ifq, test->ctx, 57, slots))
         goto out;
-
-    netgpu_populate_ring(test->ctx, (uint64_t)test->zc_area, slots);
+    if (netgpu_register_memory(test->ctx, test->zc_mem, test->zc_memsz,
+			       test->zc_memtype))
+        goto out;
+    netgpu_populate_ring(test->ifq, (uint64_t)test->zc_mem, slots);
 
     return true;
 
 out:
+    if (test->ifq)
+        netgpu_close_ifq(&test->ifq);
     if (test->ctx)
-        netgpu_stop(&test->ctx);
-    if (test->zc_area)
-        netgpu_free_memory(test->zc_area, test->zc_mapsz, test->gpumem);
-    test->zc_area = NULL;
+        netgpu_close_ctx(&test->ctx);
+    if (test->zc_mem)
+        netgpu_free_memory(test->zc_mem, test->zc_memsz, test->zc_memtype);
+    test->zc_mem = NULL;
     return false;
 }
 
@@ -3714,22 +3719,23 @@ iperf_attach_zc(struct iperf_stream *sp, struct iperf_test *test)
     if (!test->ctx)
         return false;
 
-    if (netgpu_attach_socket(test->ctx, sp->socket))
+    if (netgpu_attach_socket(&sp->zc_sk, test->ctx, sp->socket, 1024))
         return false;
 
-    sp->ctx = test->ctx;
+    sp->ifq = test->ifq;
     sp->snd = iperf_zc_tcp_send;
     sp->rcv = iperf_zc_tcp_recv;
 
     sp->data_buffer = sp->buffer;
-    if (test->gpumem) {
-        sp->data_buffer = netgpu_alloc_memory(sp->settings->blksize, true);
+    if (test->zc_memtype == MEMTYPE_CUDA) {
+        sp->data_buffer =
+                netgpu_alloc_memory(sp->settings->blksize, test->zc_memtype);
         if (!sp->data_buffer)
             return false;
     }
 
-    if (netgpu_register_region(sp->ctx, sp->data_buffer,
-            test->settings->blksize, test->gpumem))
+    if (netgpu_register_memory(test->ctx, sp->data_buffer,
+            test->settings->blksize, test->zc_memtype))
 	return false;
 
     return true;
